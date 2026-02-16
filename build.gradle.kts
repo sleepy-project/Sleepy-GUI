@@ -19,6 +19,7 @@ java {
 
 dependencies {
 
+    implementation("org.java-websocket:Java-WebSocket:1.5.3")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     // JSON 处理
     implementation("com.fasterxml.jackson.core:jackson-databind:2.17.2")

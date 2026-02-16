@@ -1,193 +1,223 @@
 package com.lokins.sleepy.gui.controller;
 
-import com.lokins.sleepy.gui.network.SleepyClient;
+import com.lokins.sleepy.gui.network.ISleepyClient;
+import com.lokins.sleepy.gui.network.SleepyClientFactory;
+import com.lokins.sleepy.gui.network.SleepyClientV5;
+import com.lokins.sleepy.gui.network.SleepyPingProvider;
 import com.lokins.sleepy.gui.service.MonitorService;
 import com.lokins.sleepy.gui.utils.ConfigManager;
 import javafx.application.Platform;
-import javafx.event.ActionEvent;
 import javafx.fxml.FXML;
 import javafx.scene.control.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
 import java.io.IOException;
 
 public class ConnectViewController {
     private static final Logger logger = LoggerFactory.getLogger(ConnectViewController.class);
 
-    @FXML private TextField serverUrlField;
-    @FXML private PasswordField secretField;
-    @FXML private TextField deviceNameField;
-    @FXML private Button startBtn;
-    @FXML private Label statusLabel;
-    @FXML private Button testConnBtn; // 必须添加这一行
+    @FXML private TextField serverUrlField, deviceNameField;
+    @FXML private PasswordField secretField, refreshTokenField;
+    @FXML private Label statusLabel, refreshLabel;
+    @FXML private Button startBtn, testConnBtn;
+    @FXML private CheckBox autoProtocolCheck;
+    @FXML private ChoiceBox<String> protocolVersionBox;
 
-    // 使用静态变量或单例，确保页面切换时服务不被销毁
     private static MonitorService monitorService;
     private static boolean isRunning = false;
 
     @FXML
     public void initialize() {
-        // 恢复之前的配置
-        try {
-            ConfigManager config = ConfigManager.getInstance();
-            serverUrlField.setText(config.get("server", "url", ""));
-            secretField.setText(config.get("auth", "secret", ""));
-            deviceNameField.setText(config.get("device", "name", "My-PC"));
-        } catch (IOException e) {
-            logger.error("加载配置失败", e);
+        // 1. 初始化下拉框选项（仅执行一次）
+        if (protocolVersionBox.getItems().isEmpty()) {
+            protocolVersionBox.getItems().addAll("Protocol v5 (Legacy)", "Protocol v6 (Modern)");
         }
 
-        // 恢复按钮状态（防止从日志页切回来时按钮变回“开始”）
-        updateUIState();
+        loadConfiguration();
+
+        if (isRunning && monitorService != null) {
+            String currentVersion = monitorService.getClient().getVersionTag(); // 需在 MonitorService 增加 getClient
+            if (currentVersion.contains("v6")) {
+                protocolVersionBox.setValue("Protocol v6 (Modern)");
+            } else {
+                protocolVersionBox.setValue("Protocol v5 (Legacy)");
+            }
+            updateUIState(); // 锁定所有输入框
+        }
+
+        // 4. 【核心修复】监听下拉框，改变即保存
+        protocolVersionBox.getSelectionModel().selectedItemProperty().addListener((obs, oldVal, newVal) -> {
+            if (newVal != null && !isRunning) {
+                updateRefreshFieldState(); // 更新刷新密钥置灰状态
+                saveCurrentConfig();      // 只要改了就保存，防止切换 Tab 丢失
+            }
+        });
+
+        if (isRunning) {
+            statusLabel.setText("状态: 正在监控 (" + protocolVersionBox.getValue() + ")");
+        } else {
+            statusLabel.setText("状态: 已停止");
+        }
+    }
+
+    private void updateRefreshFieldState() {
+        boolean isV6 = protocolVersionBox.getValue().contains("v6");
+        boolean isAuto = autoProtocolCheck.isSelected();
+        // 只有非自动模式且选了 V6，或者自动模式（待检测）时，我们根据需要开启
+        refreshTokenField.setDisable(!isV6 && !isAuto);
+        refreshLabel.setOpacity(refreshTokenField.isDisable() ? 0.5 : 1.0);
+    }
+
+    @FXML
+    private void handleAutoProtocolToggle() {
+        protocolVersionBox.setDisable(autoProtocolCheck.isSelected());
+        updateRefreshFieldState();
+    }
+
+    @FXML
+    private void handleTestConnection() {
+        String url = serverUrlField.getText().trim();
+        if (url.isEmpty()) {
+            showAlert(Alert.AlertType.WARNING, "提醒", "请输入服务器地址后再进行测试");
+            return;
+        }
+
+        // UI 反馈
+        testConnBtn.setDisable(true);
+        statusLabel.setText("状态: 正在测试连通性...");
+
+        // 在后台线程执行网络操作，避免 UI 卡死
+        new Thread(() -> {
+            SleepyPingProvider.PingResult result = SleepyPingProvider.testConnection(url);
+
+            // 回到 UI 线程更新界面
+            Platform.runLater(() -> {
+                testConnBtn.setDisable(false);
+                if (result.success) {
+                    statusLabel.setText("状态: 连接正常 (" + result.latencyMs + "ms)");
+                    showAlert(Alert.AlertType.INFORMATION, "测试通过",
+                            "成功连接到服务器！\n响应延迟: " + result.latencyMs + "ms");
+                } else {
+                    statusLabel.setText("状态: 连接失败");
+                    showAlert(Alert.AlertType.ERROR, "测试失败", result.message);
+                }
+            });
+        }).start();
     }
 
     @FXML
     private void handleStart() {
-        try {
-            ConfigManager config = ConfigManager.getInstance();
-            config.set("server", "url", serverUrlField.getText());
-            config.set("auth", "secret", secretField.getText());
-            config.set("device", "name", deviceNameField.getText());
-
-            // ！！！必须加这一行，否则文件不会更新 ！！！
-            config.save();
-
-            logger.info("配置已持久化到磁盘");
-        } catch (IOException e) {
-            logger.error("无法保存配置", e);
-        }
-
-        if (!isRunning) {
-            startMonitoring();
-        } else {
+        if (isRunning) {
             stopMonitoring();
-        }
-    }
-
-    private void startMonitoring() {
-        String url = serverUrlField.getText();
-        String secret = secretField.getText();
-        String device = deviceNameField.getText();
-
-        if (url.isEmpty() || secret.isEmpty() || device.isEmpty()) {
-            logger.warn("配置不完整，取消启动");
-            showAlert(Alert.AlertType.ERROR, "启动失败", "配置信息不完整。请确保服务器地址、密钥和设备名称都已填写。");
             return;
         }
 
-        // 启动逻辑
-        SleepyClient client = new SleepyClient(url, secret, device);
+        saveCurrentConfig();
+
+        if (autoProtocolCheck.isSelected()) {
+            statusLabel.setText("状态: 自动识别中...");
+            new Thread(() -> {
+                int version = SleepyClientV5.probeProtocolVersion(serverUrlField.getText());
+                Platform.runLater(() -> executeStartSequence(version));
+            }).start();
+        } else {
+            executeStartSequence(protocolVersionBox.getValue().contains("v6") ? 6 : 5);
+        }
+    }
+
+    private void executeStartSequence(int version) {
+        // 确保在主线程更新 UI 状态
+        Platform.runLater(() -> {
+            // 如果是自动检测出来的版本，我们需要手动同步下拉框的值
+            // 这样 updateRefreshFieldState() 才能拿到正确的结果
+            if (autoProtocolCheck.isSelected()) {
+                if (version == 6) {
+                    protocolVersionBox.setValue("Protocol v6 (Modern)");
+                } else {
+                    protocolVersionBox.setValue("Protocol v5 (Legacy)");
+                }
+            }
+            // 核心修复：强制刷新“刷新密钥”一栏的禁用/启用状态
+            updateRefreshFieldState();
+        });
+
+        // 原有的启动逻辑...
+        ISleepyClient client = SleepyClientFactory.createClient();
         monitorService = new MonitorService(client, (appName) -> {
             Platform.runLater(() -> statusLabel.setText("正在运行: " + appName));
         });
 
-        monitorService.start();
-        isRunning = true;
-        updateUIState();
-        logger.info(">>> 监控已启动，设备名: {}", device);
+        if (monitorService.start()) {
+            isRunning = true;
+            Platform.runLater(this::updateUIState); // 务必在 UI 线程刷新按钮文字
+        } else {
+            Platform.runLater(() -> {
+                statusLabel.setText("状态: 连接失败");
+                isRunning = false;
+                updateUIState();
+            });
+        }
     }
 
     private void stopMonitoring() {
         if (monitorService != null) monitorService.stop();
         isRunning = false;
         updateUIState();
-        logger.info(">>> 监控已手动停止");
-    }
-
-    private void updateUIState() {
-        if (isRunning) {
-            startBtn.setText("停止监控");
-            startBtn.setStyle("-fx-background-color: #e74c3c; -fx-text-fill: white;");
-            statusLabel.setText("状态: 运行中");
-        } else {
-            startBtn.setText("开始监控");
-            startBtn.setStyle(""); // 恢复 CSS 默认
-            statusLabel.setText("状态: 已停止");
-        }
     }
 
     @FXML
-    private void handleTestConnection() {
-        String url = serverUrlField.getText().trim();
-
-        if (url.isEmpty()) {
-            showStatus("请输入服务器地址", "red");
-            return;
-        }
-
-        if (!url.startsWith("http://") && !url.startsWith("https://")) {
-            url = "http://" + url;
-            serverUrlField.setText(url);
-        }
-
-        // 禁用按钮防止重复点击
-        testConnBtn.setDisable(true);
-        testConnBtn.setText("测试中...");
-
-        String finalUrl1 = url;
-        new Thread(() -> {
-            boolean success = false;
-            try {
-                // 2. 使用锁定的 url 变量
-                SleepyClient testClient = new SleepyClient(finalUrl1, "", "");
-                success = testClient.ping();
-            } catch (Exception e) {
-                System.err.println("测试连接失败: " + e.getMessage());
-            }
-
-            // 3. 回到主线程更新 UI
-            final boolean finalSuccess = success;
-            Platform.runLater(() -> {
-                testConnBtn.setDisable(false);
-                testConnBtn.setText("测试连接");
-
-                if (finalSuccess) {
-                    showAlert(Alert.AlertType.INFORMATION, "成功", "服务器连接正常！");
-                } else {
-                    showAlert(Alert.AlertType.ERROR, "失败", "无法连接到服务器，请检查地址或网络。");
-                }
-            });
-        }).start();
+    private void handleSaveAction() {
+        saveCurrentConfig();
+        showAlert(Alert.AlertType.INFORMATION, "成功", "配置已保存");
     }
 
-    private void showStatus(String message, String color) {
-        System.out.println("Status: " + message);
+    private void saveCurrentConfig() {
+        try {
+            ConfigManager config = ConfigManager.getInstance();
+            config.set("server", "url", serverUrlField.getText());
+            config.set("auth", "secret", secretField.getText());
+            config.set("auth", "refresh_token", refreshTokenField.getText()); // 存入 auth 下
+            config.set("device", "name", deviceNameField.getText());
+            config.set("settings", "auto_protocol", String.valueOf(autoProtocolCheck.isSelected()));
+            config.set("settings", "protocol_version", autoProtocolCheck.isSelected() ? "0" : (protocolVersionBox.getValue().contains("v6") ? "6" : "5"));
+            config.save();
+        } catch (IOException e) { logger.error("保存失败", e); }
     }
 
+    private void loadConfiguration() {
+        try {
+            ConfigManager config = ConfigManager.getInstance();
+            serverUrlField.setText(config.get("server", "url", ""));
+            secretField.setText(config.get("auth", "secret", ""));
+            refreshTokenField.setText(config.get("auth", "refresh_token", ""));
+            deviceNameField.setText(config.get("device", "name", "My-PC"));
+            boolean isAuto = Boolean.parseBoolean(config.get("settings", "auto_protocol", "true"));
+            autoProtocolCheck.setSelected(isAuto);
+            protocolVersionBox.setDisable(isAuto);
+            updateRefreshFieldState();
+        } catch (Exception e) { logger.warn("配置加载失败"); }
+    }
+
+    private void updateUIState() {
+        // 强制 UI 切换
+        startBtn.setText(isRunning ? "停止监控" : "开始监控");
+        startBtn.getStyleClass().removeAll("primary-button", "danger-button");
+        startBtn.getStyleClass().add(isRunning ? "danger-button" : "primary-button");
+
+        // 运行中禁用，停止后启用
+        boolean disabled = isRunning;
+        serverUrlField.setDisable(disabled);
+        secretField.setDisable(disabled);
+        refreshTokenField.setDisable(disabled || !protocolVersionBox.getValue().contains("v6")); // V6 特殊判断
+        deviceNameField.setDisable(disabled);
+        autoProtocolCheck.setDisable(disabled);
+        protocolVersionBox.setDisable(disabled || autoProtocolCheck.isSelected());
+        testConnBtn.setDisable(disabled);
+    }
     private void showAlert(Alert.AlertType type, String title, String content) {
         Alert alert = new Alert(type, content, ButtonType.OK);
         alert.setTitle(title);
         alert.setHeaderText(null);
         alert.showAndWait();
-    }
-
-    @FXML
-    private void handleSaveConfig() {
-        String url = serverUrlField.getText().trim();
-        String secret = secretField.getText().trim();
-        String deviceName = deviceNameField.getText().trim();
-
-        if (url.isEmpty()) {
-            showAlert(Alert.AlertType.WARNING, "校验失败", "服务器地址不能为空");
-            return;
-        }
-
-        try {
-            ConfigManager config = ConfigManager.getInstance();
-            // 写入配置内存
-            config.set("connection", "server_url", url);
-            config.set("connection", "secret", secret);
-            config.set("connection", "device_name", deviceName);
-
-            // 执行持久化，写入 .sleepy/config.ini
-            config.save();
-
-            showAlert(Alert.AlertType.INFORMATION, "保存成功", "连接配置已持久化到本地。");
-            logger.info("用户手动保存了连接配置: {}", url);
-        } catch (IOException e) {
-            logger.error("保存配置失败", e);
-            showAlert(Alert.AlertType.ERROR, "保存失败", "无法写入配置文件: " + e.getMessage());
-        }
     }
 }

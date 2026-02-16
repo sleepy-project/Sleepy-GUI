@@ -1,6 +1,6 @@
 package com.lokins.sleepy.gui.service;
 
-import com.lokins.sleepy.gui.network.SleepyClient;
+import com.lokins.sleepy.gui.network.ISleepyClient;
 import com.lokins.sleepy.gui.utils.ConfigManager;
 import com.lokins.sleepy.gui.utils.Win32WindowUtil;
 import org.slf4j.Logger;
@@ -14,20 +14,31 @@ import java.util.function.Consumer;
 public class MonitorService {
     private static final Logger logger = LoggerFactory.getLogger(MonitorService.class);
 
-    private final SleepyClient client;
+    private final ISleepyClient client;
     private final Consumer<String> onAppChanged;
     private ScheduledExecutorService scheduler;
-
     private String lastApp = "";
 
-    public MonitorService(SleepyClient client, Consumer<String> onAppChanged) {
+    // 构造函数接收已经创建好的 client，不要在内部重新创建
+    public MonitorService(ISleepyClient client, Consumer<String> onAppChanged) {
         this.client = client;
         this.onAppChanged = onAppChanged;
     }
 
-    public void start() {
+    public boolean start() {
+        if (client == null) {
+            logger.error("监控服务启动失败：Client 未初始化。");
+            return false;
+        }
+
+        // 直接使用传入的 client 连接，不要调用 Factory.createClient()
+        if (!client.connect()) {
+            logger.error("监控服务启动失败：无法建立连接。");
+            return false;
+        }
+
         if (scheduler != null && !scheduler.isShutdown()) {
-            return;
+            scheduler.shutdownNow();
         }
 
         scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
@@ -36,59 +47,54 @@ public class MonitorService {
             return t;
         });
 
-        // 关键改动：不再使用固定的 scheduleAtFixedRate
-        // 改为调用一个自适应的调度方法
         adaptiveSchedule();
-        logger.info("Monitor Service started with adaptive interval.");
-    }
+        logger.info("监控服务已启动，使用协议: {}", client.getVersionTag());
 
-    /**
-     * 自适应调度逻辑：每次执行完任务后，根据最新配置决定下一次什么时候执行
-     */
-    private void adaptiveSchedule() {
-        if (scheduler == null || scheduler.isShutdown()) return;
-
-        // 1. 执行核心检测逻辑
-        checkCurrentWindow();
-
-        // 2. 从配置管理器获取最新的间隔时间
-        int delay = 5; // 默认 5 秒
-        try {
-            String intervalStr = ConfigManager.getInstance().get("settings", "interval", "5");
-            delay = Integer.parseInt(intervalStr);
-            // 限制最小值，防止用户输入 0 导致 CPU 飙升
-            if (delay < 1) delay = 1;
-        } catch (Exception e) {
-            logger.warn("Failed to read interval config, using default 5s");
-        }
-
-        // 3. 递归调度下一次任务
-        scheduler.schedule(this::adaptiveSchedule, delay, TimeUnit.SECONDS);
-    }
-
-    private void checkCurrentWindow() {
-        try {
-            String currentApp = Win32WindowUtil.getActiveWindowTitle();
-            if (currentApp == null || currentApp.isEmpty()) return;
-
-            if (!currentApp.equals(lastApp)) {
-                logger.info("Detected app change: {}", currentApp);
-                client.sendReport(currentApp);
-
-                if (onAppChanged != null) {
-                    onAppChanged.accept(currentApp);
-                }
-                lastApp = currentApp;
-            }
-        } catch (Exception e) {
-            logger.error("Error during monitoring: {}", e.getMessage());
-        }
+        // 启动时立即触发一次 UI 更新，显示当前窗口
+        checkCurrentWindow(true);
+        return true;
     }
 
     public void stop() {
-        if (scheduler != null) {
-            scheduler.shutdownNow();
-            logger.info("Monitor Service stopped.");
+        if (scheduler != null) scheduler.shutdownNow();
+        if (client != null) client.disconnect();
+        logger.info("监控服务已停止。");
+    }
+
+    private void adaptiveSchedule() {
+        if (scheduler == null || scheduler.isShutdown()) return;
+
+        checkCurrentWindow(false);
+
+        int delay = 5;
+        try {
+            delay = Integer.parseInt(ConfigManager.getInstance().get("settings", "interval", "5"));
+        } catch (Exception ignored) {}
+
+        scheduler.schedule(this::adaptiveSchedule, Math.max(delay, 1), TimeUnit.SECONDS);
+    }
+
+    private void checkCurrentWindow(boolean forceNotify) {
+        try {
+            String currentApp = Win32WindowUtil.getActiveWindowTitle();
+            if (currentApp == null || currentApp.isEmpty()) currentApp = "未知窗口";
+
+            // 执行上报
+            client.sendReport(currentApp, true);
+
+            // 如果窗口变了，或者强制通知（启动时），则触发回调更新 UI
+            if (forceNotify || !currentApp.equals(lastApp)) {
+                lastApp = currentApp;
+                if (onAppChanged != null) {
+                    onAppChanged.accept(currentApp);
+                }
+            }
+        } catch (Exception e) {
+            logger.error("扫描窗口异常: {}", e.getMessage());
         }
+    }
+
+    public ISleepyClient getClient() {
+        return this.client;
     }
 }

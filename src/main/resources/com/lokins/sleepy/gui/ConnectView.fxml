@@ -13,7 +13,10 @@
 
     <GridPane vgap="15" hgap="10">
         <columnConstraints>
-            <ColumnConstraints minWidth="80" prefWidth="80" /> <ColumnConstraints hgrow="ALWAYS" />               <ColumnConstraints />                              </columnConstraints>
+            <ColumnConstraints minWidth="80" prefWidth="80" />
+            <ColumnConstraints hgrow="ALWAYS" />
+            <ColumnConstraints />
+        </columnConstraints>
 
         <Label text="服务器地址:" GridPane.rowIndex="0" GridPane.columnIndex="0"/>
         <TextField fx:id="serverUrlField" promptText="https://api.example.com"
@@ -21,20 +24,28 @@
         <Button fx:id="testConnBtn" text="测试连接" onAction="#handleTestConnection"
                 GridPane.rowIndex="0" GridPane.columnIndex="2" styleClass="secondary-button"/>
 
-        <Label text="验证密钥:" GridPane.rowIndex="1" GridPane.columnIndex="0"/>
-        <PasswordField fx:id="secretField" promptText="Your Secret Key"
-                       GridPane.rowIndex="1" GridPane.columnIndex="1" GridPane.columnSpan="2"/>
+        <Label text="通信协议:" GridPane.rowIndex="1" GridPane.columnIndex="0"/>
+        <HBox spacing="10" alignment="CENTER_LEFT" GridPane.rowIndex="1" GridPane.columnIndex="1" GridPane.columnSpan="2">
+            <CheckBox fx:id="autoProtocolCheck" text="自动检测" selected="true" onAction="#handleAutoProtocolToggle"/>
+            <ChoiceBox fx:id="protocolVersionBox" prefWidth="150" disable="true"/>
+        </HBox>
 
-        <Label text="设备名称:" GridPane.rowIndex="2" GridPane.columnIndex="0"/>
-        <TextField fx:id="deviceNameField" GridPane.rowIndex="2" GridPane.columnIndex="1"
+        <Label text="验证密钥:" GridPane.rowIndex="2" GridPane.columnIndex="0"/>
+        <PasswordField fx:id="secretField" promptText="Your Secret Key (V5/V6)"
+                       GridPane.rowIndex="2" GridPane.columnIndex="1" GridPane.columnSpan="2"/>
+
+        <Label fx:id="refreshLabel" text="刷新密钥:" GridPane.rowIndex="3" GridPane.columnIndex="0" style="-fx-opacity: 0.5;"/>
+        <PasswordField fx:id="refreshTokenField" promptText="Refresh Token (V6 Only)"
+                       GridPane.rowIndex="3" GridPane.columnIndex="1" GridPane.columnSpan="2" disable="true"/>
+
+        <Label text="设备名称:" GridPane.rowIndex="4" GridPane.columnIndex="0"/>
+        <TextField fx:id="deviceNameField" GridPane.rowIndex="4" GridPane.columnIndex="1"
                    GridPane.columnSpan="2"/>
     </GridPane>
 
     <HBox spacing="15" alignment="CENTER_LEFT">
-        <Button fx:id="startBtn" text="开始监控" onAction="#handleStart"
-                styleClass="primary-button" prefWidth="120"/>
-        <Button fx:id="saveConnBtn" text="保存配置" onAction="#handleSaveConfig"
-                styleClass="secondary-button" prefWidth="100"/>
+        <Button fx:id="startBtn" text="开始监控" onAction="#handleStart" styleClass="primary-button" prefWidth="120"/>
+        <Button fx:id="saveConnBtn" text="保存配置" onAction="#handleSaveAction" styleClass="secondary-button" prefWidth="100"/>
         <Label fx:id="statusLabel" text="状态: 未连接" style="-fx-text-fill: #7f8c8d;"/>
     </HBox>
 </VBox>

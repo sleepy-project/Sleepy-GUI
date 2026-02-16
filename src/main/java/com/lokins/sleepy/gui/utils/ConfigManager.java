@@ -11,7 +11,6 @@ public class ConfigManager {
     private static final Logger logger = LoggerFactory.getLogger(ConfigManager.class);
     private static ConfigManager instance;
 
-    // --- 核心修改：使用 PathUtils 获取隐藏目录下的路径 ---
     private final File configFile = new File(PathUtils.getDataPath("config.ini"));
     private final Wini ini;
 

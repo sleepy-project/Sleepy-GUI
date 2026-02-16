@@ -27,5 +27,15 @@ public class ReportPayload {
         this.status = appName;
     }
 
-    // Getters and Setters...
+    public void setUsing(boolean using) {
+        this.using = using;
+    }
+
+    public void setStatus(String status) {
+        this.status = status;
+    }
+
+    public Map<String, Object> getFields() {
+        return fields;
+    }
 }
